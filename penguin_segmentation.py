@@ -279,7 +279,7 @@ def segment_image(K, attemps, max_iterations, eps, image_path):
 	res2 = res.reshape((img.shape))
 
 	# Use Gaussian to close gaps
-	blur = cv2.GaussianBlur(res2,(19,19),0)
+	blur = cv2.GaussianBlur(res2,(15,15),0)
 
 	# Repeate K-means!
 	reshaped_img = blur.reshape((-1,3))
@@ -312,7 +312,7 @@ def segment_image(K, attemps, max_iterations, eps, image_path):
 	num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(gray, connectivity, cv2.CV_64F)
 
 	# Find top connected component regions in both images
-	top_labels = largest_CC_regions(num_labels, NUM_COLOR_CLUSTER_REGIONS, stats, (r*c)/6, c, r, 8)
+	top_labels = largest_CC_regions(num_labels, NUM_COLOR_CLUSTER_REGIONS, stats, (r*c)/3, c, r, 8)
 
 # For Display Purposes only
 ##############################################################3

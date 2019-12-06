@@ -30,35 +30,23 @@ attempts=10
 eps = 1.0
 
 NUM_COLOR_CLUSTER_REGIONS = 6
-NUM_ENTROPY_TEXTURE_REGIONS = 5
-NUM_COLOR_RAG_ATRRIBUTES = 8
-NUM_ENTROPY_RAG_ATTRIBUTES = 2
+NUM_RAG_ATRRIBUTES = 4
+NUM_REGION_ATTRIBUTES = 12
 
-RAG_COLOR = [[ [0 for col in range(NUM_COLOR_RAG_ATRRIBUTES)] for col in range(NUM_COLOR_CLUSTER_REGIONS)] for row in range(NUM_COLOR_CLUSTER_REGIONS)]
-#RAG_ENTROPY = [[ [0 for col in range(NUM_ENTROPY_RAG_ATTRIBUTES)] for col in range(NUM_ENTROPY_TEXTURE_REGIONS)] for row in range(NUM_ENTROPY_TEXTURE_REGIONS)]
-HIST_COLOR_REGIONS = [0 for col in range(NUM_COLOR_CLUSTER_REGIONS)]
-HIST_IMAGE = None
-
-BELOW_ADJACENCY = 0
-ABOVE_ADJACENCY = 1
-LEFT_ADJACENCY  = 2
-RIGHT_ADJACENCY = 3
+RAG = [[ [0 for col in range(NUM_RAG_ATRRIBUTES)] for col in range(NUM_COLOR_CLUSTER_REGIONS)] for row in range(NUM_COLOR_CLUSTER_REGIONS)]
+REGION_ATTRIBUTES = [ [0 for col in range(NUM_REGION_ATTRIBUTES)] for col in range(NUM_COLOR_CLUSTER_REGIONS)]
 
 # Create mask of region based on labels
 def create_mask(img, labels, num_label, num_rows, num_columns):
+	mask = np.zeros(img.shape[:2], np.uint8)
 	for i in range(num_rows):
 		for j in range(num_columns):
 			if not labels[i][j] == num_label:
-				img[i][j] = [0,0,0]
+				mask[i][j] = 0
 			else:
-				img[i][j] = [255,255,255]
+				mask[i][j] = 255
 
-# Create histogram of image or region with a mask
-def calc_hist(img, mask):
-	# Calculate histogram of entire image
-	hist = cv2.calcHist([img], [0, 1, 2], mask, [8, 8, 8], [0, 256, 0, 256, 0, 256])
-	hist = cv2.normalize(hist, hist).flatten()
-	return hist
+	return mask
 
 # Grey Co-occurence Matrix - calculates dissimilarity and correlation
 def texture_CC_region(img, labels, num_label, num_rows, num_columns):
@@ -74,8 +62,11 @@ def texture_CC_region(img, labels, num_label, num_rows, num_columns):
 	glcm = greycomatrix(gray, [5], [0],levels=256, symmetric=True, normed=True)
 	dissimilar = greycoprops(glcm, 'dissimilarity')[0, 0]
 	correlation = greycoprops(glcm, 'correlation')[0, 0]
+	contrast = greycoprops(glcm, 'contrast')[0, 0]
+	homogeneity = greycoprops(glcm, 'homogeneity')[0, 0]
+	energy = greycoprops(glcm, 'energy')[0, 0]
 
-	return (dissimilar, correlation)
+	return (dissimilar, correlation, contrast, homogeneity, energy)
 
 # Calculate percentage of pixels that fulfill relationship wrt centroid of other region
 def percentage_pixels(region_centroid, labels, num_label, num_rows, num_columns):
@@ -112,30 +103,28 @@ def percentage_pixels(region_centroid, labels, num_label, num_rows, num_columns)
 # Calculate the largest CC regions of an image based on size and position in the image
 def largest_CC_regions(num_regions, num_needed_regions, stats, max_area, width, height, limits):
 
-	max_values = [0] * num_needed_regions
-	indices = [0] * num_needed_regions
+	indices = []
+	sizes = [row[4] for row in stats]
+	counter = 0
 
-	for i in range(num_regions):
+	sorted_sizes = sorted(((v, i) for i, v in enumerate(sizes)), reverse=True)
 
-		if stats[i][0] < (width/limits):
+	for i, (value, index) in enumerate(sorted_sizes):
+		if stats[index][0] < (width/limits):
 			continue
-		if stats[i][1] == 0:
+		if stats[index][1] == 0:
 			continue
-		if (stats[i][0] + stats[i][2]) > (width *(limits-1)/limits):
+		if (stats[index][0] + stats[index][2]) > (width *(limits-1)/limits):
 			continue
-		if (stats[i][1] + stats[i][3]) == height:
+		if (stats[index][1] + stats[index][3]) == height:
 			continue
-
-		if min(max_values) <= stats[i][4] and stats[i][4] < max_area:
-			minpos = max_values.index(min(max_values))
-			max_values[minpos] = stats[i][4]
-			indices[minpos] = i
+		if value < max_area:
+			counter += 1
+			indices.append(index)
+		if counter == num_needed_regions:
+			break
 
 	return indices
-
-# Calculate the size
-def size_CC_region(labels, num_label):
-	return sum((x == num_label).sum() for x in labels)
 
 def mean_color_CC_region(labels, num_label, original_image):
 	mean_r = 0
@@ -163,72 +152,105 @@ def mean_color_CC_region(labels, num_label, original_image):
 
 #def create_texture_cluster_RAG(image, centroids, labels, top_labels, num_rows, num_columns):
 
-def create_color_cluster_RAG(image, centroids, labels, top_labels, num_rows, num_columns):
-	global RAG_COLOR
-	global HIST_COLOR_REGIONS
-	size = []
-	mean_color = []
-	texture = []
-	mask = None
+def create_color_cluster_RAG(image, centroids, stats, labels, top_labels, num_rows, num_columns):
+	global RAG
+	global REGION_ATTRIBUTES
 
 	# calculate attributes of regions
 	for num in range(len(top_labels)):
-		size.append(size_CC_region(labels, top_labels[num]))
-		mean_color.append(mean_color_CC_region(labels, top_labels[num], image))
-		texture.append(texture_CC_region(image, labels, top_labels[num], num_rows, num_columns))
+		size = stats[top_labels[num]][4]
+		mean_color = mean_color_CC_region(labels, top_labels[num], image)
+		dissimilar, correlation, contrast, homogeneity, energy = texture_CC_region(image, labels, top_labels[num], num_rows, num_columns)
+		start_x = stats[top_labels[num]][0]
+		start_y = stats[top_labels[num]][1]
+		width = stats[top_labels[num]][2]
+		height = stats[top_labels[num]][3]
+
+		# Size of region
+		REGION_ATTRIBUTES[num][0] = size
+		# Mean color of region
+		REGION_ATTRIBUTES[num][1] = mean_color
+		# Texture - Dissimilarity
+		REGION_ATTRIBUTES[num][2] = dissimilar
+		# Texture - Correlation
+		REGION_ATTRIBUTES[num][3] = correlation
+		# Texture - Contrast
+		REGION_ATTRIBUTES[num][4] = contrast
+		# Texture - Homogeneity
+		REGION_ATTRIBUTES[num][5] = homogeneity
+		# Texture - Energy
+		REGION_ATTRIBUTES[num][6] = energy
+		# Centroid of region
+		REGION_ATTRIBUTES[num][7] = (centroids[num][0],centroids[num][1])
+		# Bounding Box
+		REGION_ATTRIBUTES[num][8] = [(start_y, start_x), (start_y, start_x + width), (start_y + height, start_x), (start_y + height, start_x + width)]
+
+		# Create mask of region
 		mask = create_mask(image, labels, top_labels[num], num_rows, num_columns)
-		HIST_COLOR_REGIONS[num] = calc_hist(image, mask)
+
+		# Blue Histogram of region
+		REGION_ATTRIBUTES[num][9] = cv2.calcHist([image],[0],mask,[64],[0,256])
+		# Green Histogram of region
+		REGION_ATTRIBUTES[num][10] = cv2.calcHist([image],[1],mask,[64],[0,256])
+		# Red Histogram of region
+		REGION_ATTRIBUTES[num][11] = cv2.calcHist([image],[2],mask,[64],[0,256])
+
+		contours,hierarchy = cv2.findContours(mask,2,1)
+		cnt1 = contours[0]
+		print(cnt1)
+		sys.exit(0)
+
+		# print(REGION_ATTRIBUTES[num][9])
+		# plt.plot(REGION_ATTRIBUTES[num][9], color='b');
+		# plt.plot(REGION_ATTRIBUTES[num][10],color = 'g')
+		# plt.plot(REGION_ATTRIBUTES[num][11],color = 'r')
+		# plt.show()
 
 	# calculate RAG weights between regions
 	for region in range(len(size)):
 		for region_to_compare in range(len(size)):
 
 			if region_to_compare == region:
-				print(region_to_compare)
-				print(region)
-				RAG_COLOR[region][region_to_compare][0] = 0
-				RAG_COLOR[region][region_to_compare][1] = 0
-				RAG_COLOR[region][region_to_compare][2] = 0
-				RAG_COLOR[region][region_to_compare][3] = 0
-				RAG_COLOR[region][region_to_compare][4] = 0
-				RAG_COLOR[region][region_to_compare][5]	= 0
+				RAG[region][region_to_compare][0] = 0
+				RAG[region][region_to_compare][1] = 0
+				RAG[region][region_to_compare][2] = 0
+				RAG[region][region_to_compare][3] = 0
 				continue
-
-			# RAG Color attribute #1 - Difference in Size
-			RAG_COLOR[region][region_to_compare][0] = size[region] - size[region_to_compare]
-
-			# RAG Color attribute #2 - Difference in Mean Color
-			RAG_COLOR[region][region_to_compare][1] = tuple(np.subtract(mean_color[region], mean_color[region_to_compare]))
-
-			# RAG Color attribute #3 - Difference in Gray Co-Matrix (Dissimilar)
-			RAG_COLOR[region][region_to_compare][2] = texture[region][0] - texture[region_to_compare][0]
-
-			# RAG Color attribute #4 - Difference in Gray Co-Matrix (Correlation)
-			RAG_COLOR[region][region_to_compare][3] = texture[region][1] - texture[region_to_compare][1]
 
 			below, above, left, right = percentage_pixels(centroids[region], labels, top_labels[region_to_compare], num_rows, num_columns)
 
 			# RAG Color attribute #5 - Percentage of Pixels above Centroid of Region
-			RAG_COLOR[region][region_to_compare][4] = below
+			if below > .5:
+				RAG[region][region_to_compare][0] = True
+			else:
+				RAG[region][region_to_compare][0] = False
 
 			# RAG Color attribute #6 - Percentage of Pixels below Centroid of Region
-			RAG_COLOR[region][region_to_compare][5] = above
+			if above > .5:
+				RAG[region][region_to_compare][1] = True
+			else:
+				RAG[region][region_to_compare][1] = False
 
 			# RAG Color attribute #7 - Percentage of Pixels left of Centroid of Region
-			RAG_COLOR[region][region_to_compare][6] = left
+			if left > .5:
+				RAG[region][region_to_compare][2] = True
+			else:
+				RAG[region][region_to_compare][2] = False
 
 			# RAG Color attribute #8 - Percentage of Pixels right of Centroid of Region
-			RAG_COLOR[region][region_to_compare][7] = right
+			if right > .5:
+				RAG[region][region_to_compare][3] = True
+			else:
+				RAG[region][region_to_compare][3] = False
 
 def segment_image(K, attemps, max_iterations, eps, image_path):
-	global RAG_COLOR
-	global HIST_COLOR_REGIONS
+	global RAG
+	global REGION_ATTRIBUTES
 	global HIST_IMAGE
 
 	# Datastructures already calculated and saved?
 	color_ds_string = os.path.splitext(image_path)[0] + "_color.pkl"
-	hist_regions_ds_string = os.path.splitext(image_path)[0] + "_hist_regions.pkl"
-	hist_ds_string = os.path.splitext(image_path)[0] + "_hist.pkl"
+	hist_regions_ds_string = os.path.splitext(image_path)[0] + "NUM_REGION_ATTRIBUTES.pkl"
 
 	# if os.path.exists(color_ds_string) and os.path.exists(hist_regions_ds_string) and os.path.exists(hist_ds_string):
 	# 	print("Data structures already created")
@@ -238,9 +260,6 @@ def segment_image(K, attemps, max_iterations, eps, image_path):
 	img=cv2.cvtColor(original_image,cv2.COLOR_BGR2RGB)
 	img_copy = img.copy()
 	img_copy_2 = img.copy()
-
-	# save histogram of image
-	HIST_IMAGE = calc_hist(img, None)
 
 	r,c,d = img.shape
 
@@ -342,14 +361,14 @@ def segment_image(K, attemps, max_iterations, eps, image_path):
 	plt.show()
 ##############################################################
 
-	# if not os.path.exists(color_ds_string):
-	# 	create_color_cluster_RAG(original_image, centroids, labels, top_labels, r, c)
+	if not os.path.exists(color_ds_string):
+		create_color_cluster_RAG(original_image, centroids, stats, labels, top_labels, r, c)
 	#
 	# color_file = open(color_ds_string, 'wb')
 	# hist_regions_file = open(hist_regions_ds_string, 'wb')
 	# hist_file = open(hist_ds_string, 'wb')
-	# pickle.dump(RAG_COLOR, color_file)
-	# pickle.dump(HIST_COLOR_REGIONS, hist_regions_file)
+	# pickle.dump(RAG, color_file)
+	# pickle.dump(REGION_ATTRIBUTES, hist_regions_file)
 	# pickle.dump(HIST_IMAGE, hist_file)
 	# color_file.close()
 	# hist_regions_file.close()
